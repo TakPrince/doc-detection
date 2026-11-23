@@ -54,6 +54,10 @@ def _load_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageF
         return ImageFont.load_default(size=size)
 
 
+def load_font(size: int, bold: bool = False):
+    return _load_font(size, bold)
+
+
 def _coerce_identity(identity: Mapping[str, Any] | Any) -> dict[str, Any]:
     if isinstance(identity, Mapping):
         record = dict(identity)
@@ -360,6 +364,7 @@ __all__ = [
     "CANVAS_SIZE",
     "OVERLAY_BBOX",
     "RenderedSpecimen",
+    "load_font",
     "render_document",
     "render_gallery",
     "save_specimen",
