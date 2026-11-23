@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "split_name": "A",
+  "seed": 20261124,
+  "train_ratio": 0.70,
+  "validation_ratio": 0.15,
+  "test_ratio": 0.15,
+  "output_path": "data/splits/splits_A.csv"
+}
