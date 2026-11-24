@@ -21,9 +21,7 @@ def _write_mini_dataset(tmp_path: Path):
     manifest_path = tmp_path / "manifest.jsonl"
     splits_path = tmp_path / "splits.csv"
     report_path = tmp_path / "audit.json"
-    identities = load_identities(
-        PROJECT_ROOT / "data" / "identities" / "identities.json"
-    )[:4]
+    identities = load_identities(PROJECT_ROOT / "data" / "identities" / "identities.json")[:4]
     rows = []
 
     splits_path.write_text("identity_id,group_id,template_id,split\n", encoding="utf-8")
@@ -33,18 +31,13 @@ def _write_mini_dataset(tmp_path: Path):
         with splits_path.open("a", encoding="utf-8") as handle:
             handle.write(f"{identity['identity_id']},{identity['group_id']},{template_id},{split}\n")
 
-        pair_id = f"{identity['identity_id']}__TEXT__EASY"
-        for label in ("GENUINE", "TAMPERED"):
+        pair_id = f"{identity['identity_id']}__TEXT"
+        for label_index, label in enumerate(("GENUINE", "TAMPERED")):
             image_id = f"{pair_id}__{label}"
             image_path = Path("images") / split / f"{image_id}.png"
-            mask_path = Path("masks") / split / f"{image_id}__mask.png"
             (data_root / image_path).parent.mkdir(parents=True, exist_ok=True)
-            (data_root / mask_path).parent.mkdir(parents=True, exist_ok=True)
             color = (index * 20, 30, 40 if label == "GENUINE" else 150)
             Image.new("RGB", IMAGE_SIZE, color).save(data_root / image_path)
-            Image.new("L", IMAGE_SIZE, 0 if label == "GENUINE" else 255).save(
-                data_root / mask_path
-            )
             rows.append(
                 {
                     "schema_version": 1,
@@ -57,21 +50,10 @@ def _write_mini_dataset(tmp_path: Path):
                     "split": split,
                     "label": label,
                     "category": "TEXT",
-                    "difficulty": "EASY",
                     "target_field": "full_name",
                     "image_path": str(image_path),
-                    "mask_path": str(mask_path),
                     "operation": "NULL_EDIT" if label == "GENUINE" else "TAMPER",
-                    "base_render_id": f"{identity['identity_id']}__base",
-                    "base_render_seed": identity["avatar_seed"],
-                    "avatar_seed": identity["avatar_seed"],
                     "identifier": identity["identifier"],
-                    "original_identifier": identity["identifier"],
-                    "pair_seed": 100 + index,
-                    "tamper_seed": 200 + index,
-                    "degradation_seed": 300 + index,
-                    "degradation_params": {"jpeg_quality": 91, "subsampling": 0},
-                    "capture_settings": {"canvas_size": [1000, 625]},
                     "specimen_label": "SPECIMEN – NOT A VALID DOCUMENT",
                 }
             )
@@ -85,13 +67,12 @@ def _write_mini_dataset(tmp_path: Path):
         "identities": 4,
         "pairs": 4,
         "label_counts": {"GENUINE": 4, "TAMPERED": 4},
-        "category_counts": {"TEXT": 8, "DATE_NUMBER": 0, "PHOTO": 0},
-        "difficulty_counts": {"EASY": 8, "MEDIUM": 0},
+        "category_counts": {"TEXT": 8, "PHOTO": 0},
         "template_counts": {
             template: sum(row["template_id"] == template for row in rows)
             for template in sorted({row["template_id"] for row in rows})
         },
-        "split_counts": {"test": 4, "train": 4},
+        "split_counts": {"train": 4, "test": 4},
     }
     config = AuditConfig(
         manifest_path=manifest_path,
@@ -117,7 +98,6 @@ def test_audit_passes_for_consistent_mini_dataset(tmp_path):
     report = run_audit(config)
 
     assert report["status"] == "PASS"
-    assert report["checks"]["deterministic_counts"]["passed"] is True
     assert report["summary"]["image_count"] == 8
     assert config.report_path.exists()
     assert json.loads(config.report_path.read_text(encoding="utf-8")) == report
@@ -143,22 +123,10 @@ def test_audit_detects_class_imbalance(tmp_path):
 
 def test_audit_detects_pair_degradation_mismatch(tmp_path):
     config, rows, manifest_path = _write_mini_dataset(tmp_path)
-    rows[1]["degradation_seed"] += 1
+    rows[1]["category"] = "PHOTO"
     _write_manifest(manifest_path, rows)
 
     with pytest.raises(AuditError, match="pair_integrity"):
-        run_audit(config)
-
-
-def test_audit_detects_nonempty_genuine_mask(tmp_path):
-    config, rows, manifest_path = _write_mini_dataset(tmp_path)
-    mask_path = config.data_root / rows[0]["mask_path"]
-    with Image.open(mask_path) as mask:
-        editable = mask.copy()
-    editable.paste(255, (0, 0, 4, 4))
-    editable.save(mask_path)
-
-    with pytest.raises(AuditError, match="masks"):
         run_audit(config)
 
 

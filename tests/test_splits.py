@@ -45,10 +45,10 @@ def test_template_distribution_is_stratified(assignments):
     counts = Counter(
         (assignment.template_id, assignment.split) for assignment in assignments
     )
-    for template_id in ("AAD-1", "AAD-2", "PAN-1", "PAN-2"):
-        assert counts[(template_id, "train")] == 70
-        assert counts[(template_id, "validation")] == 15
-        assert counts[(template_id, "test")] == 15
+    for template_id in ("AAD-1", "PAN-1"):
+        assert counts[(template_id, "train")] == 140
+        assert counts[(template_id, "validation")] == 30
+        assert counts[(template_id, "test")] == 30
 
 
 def test_no_identity_or_group_leakage(identities, assignments):

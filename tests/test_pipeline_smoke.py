@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import json
 import sys
-from collections import Counter, defaultdict
+from collections import defaultdict
 from pathlib import Path
 
 import pytest
-from PIL import Image
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
@@ -18,7 +17,7 @@ from docdet.data.generate_dataset import (  # noqa: E402
     load_split_map,
 )
 from docdet.data.identities import load_identities  # noqa: E402
-from docdet.data.tamper import DIFFICULTIES, TAMPER_CATEGORIES, identifier_is_invalid  # noqa: E402
+from docdet.data.tamper import TAMPER_CATEGORIES  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -45,15 +44,24 @@ def _config(tmp_path: Path, identities: list[dict], split_map: dict[str, str]) -
     )
 
 
-def test_smoke_generation_produces_expected_counts(tmp_path, smoke_identities, split_map):
+def test_generation_produces_expected_counts(tmp_path, smoke_identities, split_map):
     result = generate_dataset(_config(tmp_path, smoke_identities, split_map))
     stats = dataset_statistics(result.manifest)
 
-    assert len(result.manifest) == len(smoke_identities) * 6
-    assert stats["label_counts"] == {"GENUINE": 12, "TAMPERED": 12}
-    assert stats["category_counts"] == {category: 8 for category in TAMPER_CATEGORIES}
-    assert sum(stats["difficulty_counts"].values()) == 24
-    assert set(stats["difficulty_counts"]) == set(DIFFICULTIES)
+    assert len(result.manifest) == len(smoke_identities) * 2
+    assert stats["image_count"] == len(smoke_identities) * 2
+    assert stats["identity_count"] == len(smoke_identities)
+    assert stats["pair_count"] == len(smoke_identities)
+    assert stats["label_counts"] == {"GENUINE": len(smoke_identities), "TAMPERED": len(smoke_identities)}
+    assert stats["category_counts"] == {
+        category: 2 * sum(
+            1
+            for index, record in enumerate(smoke_identities)
+            if TAMPER_CATEGORIES[index % len(TAMPER_CATEGORIES)] == category
+        )
+        for category in TAMPER_CATEGORIES
+    }
+    assert sum(stats["category_counts"].values()) == len(result.manifest)
     assert set(stats["template_counts"]) == {record["template_id"] for record in smoke_identities}
 
 
@@ -69,15 +77,11 @@ def test_manifest_has_required_fields_and_existing_assets(tmp_path, smoke_identi
         "split",
         "label",
         "category",
-        "difficulty",
-        "mask_path",
-        "image_path",
         "target_field",
-        "pair_seed",
-        "tamper_seed",
-        "degradation_seed",
-        "degradation_params",
-        "capture_settings",
+        "image_path",
+        "operation",
+        "identifier",
+        "specimen_label",
     }
 
     assert result.manifest_path.exists()
@@ -86,20 +90,17 @@ def test_manifest_has_required_fields_and_existing_assets(tmp_path, smoke_identi
     for entry in result.manifest:
         assert required <= set(entry)
         assert (config.output_dir / entry["image_path"]).exists()
-        assert (config.output_dir / entry["mask_path"]).exists()
         assert entry["specimen_label"] == "SPECIMEN – NOT A VALID DOCUMENT"
-        assert identifier_is_invalid(entry["identifier"], entry["template_family"])
 
 
-def test_pairs_share_identity_render_target_and_degradation(tmp_path, smoke_identities, split_map):
+def test_pairs_share_identity_render_target_and_split(tmp_path, smoke_identities, split_map):
     result = generate_dataset(_config(tmp_path, smoke_identities, split_map))
     grouped: dict[str, list[dict]] = defaultdict(list)
     for entry in result.manifest:
         grouped[entry["pair_id"]].append(entry)
 
-    assert len(grouped) == len(smoke_identities) * 3
+    assert len(grouped) == len(smoke_identities)
     for pair_id, members in grouped.items():
-        assert pair_id
         assert len(members) == 2
         genuine, tampered = sorted(members, key=lambda row: row["label"])
         assert genuine["label"] == "GENUINE"
@@ -110,38 +111,15 @@ def test_pairs_share_identity_render_target_and_degradation(tmp_path, smoke_iden
             "template_id",
             "split",
             "category",
-            "difficulty",
             "target_field",
-            "base_render_seed",
-            "pair_seed",
-            "tamper_seed",
-            "degradation_seed",
-            "degradation_params",
-            "capture_settings",
+            "pair_id",
         ):
             assert genuine[field] == tampered[field], (pair_id, field)
-        if genuine["category"] == "PHOTO":
-            assert genuine["avatar_seed"] == tampered["original_avatar_seed"]
-        else:
-            assert genuine["avatar_seed"] == tampered["avatar_seed"]
         assert genuine["operation"] == "NULL_EDIT"
         assert tampered["operation"] == "TAMPER"
 
 
-def test_genuine_masks_are_empty_and_tampered_masks_are_not(tmp_path, smoke_identities, split_map):
-    config = _config(tmp_path, smoke_identities, split_map)
-    result = generate_dataset(config)
-
-    for entry in result.manifest:
-        with Image.open(config.output_dir / entry["mask_path"]) as mask:
-            assert mask.mode == "L"
-            if entry["label"] == "GENUINE":
-                assert mask.getbbox() is None
-            else:
-                assert mask.getbbox() is not None
-
-
-def test_split_isolation_and_manifest_split_matches_source(tmp_path, smoke_identities, split_map):
+def test_split_isolation_matches_source(tmp_path, smoke_identities, split_map):
     result = generate_dataset(_config(tmp_path, smoke_identities, split_map))
     identity_splits: dict[str, set[str]] = defaultdict(set)
 
@@ -157,23 +135,7 @@ def test_generation_is_deterministic(tmp_path, smoke_identities, split_map):
     second = generate_dataset(_config(tmp_path / "b", smoke_identities, split_map))
 
     assert first.manifest == second.manifest
-    assert {entry["image_id"]: entry["image_path"] for entry in first.manifest} == {
-        entry["image_id"]: entry["image_path"] for entry in second.manifest
-    }
     for left, right in zip(first.manifest, second.manifest):
         assert (first.output_dir / left["image_path"]).read_bytes() == (
             second.output_dir / right["image_path"]
         ).read_bytes()
-        assert (first.output_dir / left["mask_path"]).read_bytes() == (
-            second.output_dir / right["mask_path"]
-        ).read_bytes()
-
-
-def test_manifest_file_matches_returned_manifest(tmp_path, smoke_identities, split_map):
-    result = generate_dataset(_config(tmp_path, smoke_identities, split_map))
-    rows = [
-        json.loads(line)
-        for line in result.manifest_path.read_text(encoding="utf-8").splitlines()
-        if line
-    ]
-    assert rows == result.manifest

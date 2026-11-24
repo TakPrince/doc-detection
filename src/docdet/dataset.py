@@ -12,7 +12,7 @@ from typing import Any
 import numpy as np
 
 from docdet.config import resolve_project_path
-from docdet.preprocessing import MODEL_IMAGE_SIZE, preprocess_sample
+from docdet.preprocessing import MODEL_IMAGE_SIZE, preprocess_image
 
 DEFAULT_MANIFEST_PATH = "data/manifests/dataset.jsonl"
 DEFAULT_DATA_ROOT = "data/generated"
@@ -24,7 +24,6 @@ LABEL_TO_INT = {"GENUINE": 0, "TAMPERED": 1}
 class Sample:
     image: np.ndarray
     label: int
-    mask: np.ndarray
     metadata: dict[str, Any]
 
 
@@ -40,6 +39,16 @@ class SyntheticDataset:
         self.manifest_path = resolve_project_path(manifest_path)
         self.data_root = resolve_project_path(data_root)
         self.split = split
+        self._image_cache: dict[str, np.ndarray] = {}
+
+    def _load_image(self, image_path: Path) -> np.ndarray:
+        key = str(image_path)
+        cached = self._image_cache.get(key)
+        if cached is None:
+            scaled = np.rint(np.asarray(preprocess_image(image_path)) * 255.0)
+            cached = scaled.astype(np.uint8)
+            self._image_cache[key] = cached
+        return cached.astype(np.float32) / 255.0
 
     def _iter_entries(self) -> Iterator[dict[str, Any]]:
         with self.manifest_path.open(encoding="utf-8") as handle:
@@ -58,17 +67,9 @@ class SyntheticDataset:
             label_text = entry["label"]
             if label_text not in LABEL_TO_INT:
                 raise ValueError(f"Unknown label: {label_text}")
-            image, mask = preprocess_sample(
-                self.data_root / entry["image_path"],
-                self.data_root / entry["mask_path"],
-                require_nonempty=label_text == "TAMPERED",
-            )
-            if mask is None:
-                raise ValueError("missing tamper mask")
             yield Sample(
-                image=image,
+                image=self._load_image(self.data_root / entry["image_path"]),
                 label=LABEL_TO_INT[label_text],
-                mask=mask,
                 metadata=dict(entry),
             )
 
@@ -91,7 +92,12 @@ def tensorflow_available() -> bool:
     return importlib.util.find_spec("tensorflow") is not None
 
 
-def to_tf_dataset(dataset: SyntheticDataset, batch_size: int = 32):
+def to_tf_dataset(
+    dataset: SyntheticDataset,
+    batch_size: int = 32,
+    *,
+    repeat: bool = False,
+):
     if not tensorflow_available():
         raise ImportError("TensorFlow is unavailable; install it separately to use tf.data")
     import tensorflow as tf
@@ -103,13 +109,16 @@ def to_tf_dataset(dataset: SyntheticDataset, batch_size: int = 32):
         for sample in dataset:
             yield sample.image, sample.label
 
-    return tf.data.Dataset.from_generator(
+    tf_dataset = tf.data.Dataset.from_generator(
         generator,
         output_signature=(
             tf.TensorSpec((MODEL_IMAGE_SIZE[1], MODEL_IMAGE_SIZE[0], 3), tf.float32),
             tf.TensorSpec((), tf.int64),
         ),
     ).batch(batch_size)
+    if repeat:
+        tf_dataset = tf_dataset.repeat()
+    return tf_dataset
 
 
 __all__ = [

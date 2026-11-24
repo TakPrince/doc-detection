@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_TEMPLATES = ("AAD-1", "AAD-2", "PAN-1", "PAN-2")
+DEFAULT_TEMPLATES = ("AAD-1", "PAN-1")
 SPECIMEN_LABEL = "SPECIMEN – NOT A VALID DOCUMENT"
 
 

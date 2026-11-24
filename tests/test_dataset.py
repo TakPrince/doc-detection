@@ -23,18 +23,14 @@ def _write_dataset(tmp_path: Path):
     splits = ("train", "validation", "test")
     for index, split in enumerate(splits):
         identity_id = f"identity-{index}"
-        pair_id = f"{identity_id}__TEXT__EASY"
+        pair_id = f"{identity_id}__TEXT"
         for label_index, label in enumerate(("GENUINE", "TAMPERED")):
             image_id = f"{pair_id}__{label}"
             image_path = Path("images") / split / f"{image_id}.png"
-            mask_path = Path("masks") / split / f"{image_id}__mask.png"
             (data_root / image_path).parent.mkdir(parents=True, exist_ok=True)
-            (data_root / mask_path).parent.mkdir(parents=True, exist_ok=True)
-            Image.new("RGB", IMAGE_SIZE, (index * 30, 20, 40)).save(data_root / image_path)
-            mask = Image.new("L", IMAGE_SIZE, 0)
-            if label == "TAMPERED":
-                mask.paste(255, (0, 0, 20, 20))
-            mask.save(data_root / mask_path)
+            Image.new("RGB", IMAGE_SIZE, (index * 30, 20, 40)).save(
+                data_root / image_path
+            )
             rows.append(
                 {
                     "image_id": image_id,
@@ -46,11 +42,11 @@ def _write_dataset(tmp_path: Path):
                     "split": split,
                     "label": label,
                     "category": "TEXT",
-                    "difficulty": "EASY",
                     "target_field": "full_name",
                     "image_path": str(image_path),
-                    "mask_path": str(mask_path),
+                    "operation": "NULL_EDIT" if label == "GENUINE" else "TAMPER",
                     "identifier": "100000000001",
+                    "specimen_label": "SPECIMEN – NOT A VALID DOCUMENT",
                 }
             )
     manifest_path.write_text(
@@ -72,7 +68,6 @@ def test_dataset_filters_split_and_returns_labels_metadata(tmp_path):
     assert all(sample.metadata["split"] == "validation" for sample in samples)
     assert all(sample.metadata["image_id"] for sample in samples)
     assert samples[0].image.shape == (160, 256, 3)
-    assert samples[0].mask.shape == (160, 256)
 
 
 def test_dataset_iteration_is_deterministic(tmp_path):
@@ -99,14 +94,18 @@ def test_batches_are_bounded_and_preserve_order(tmp_path):
     assert ids == [row["image_id"] for row in rows]
 
 
-def test_dataset_rejects_empty_tampered_mask(tmp_path):
+def test_dataset_preserves_pixel_intensities_across_cached_reads(tmp_path):
     manifest_path, data_root, rows = _write_dataset(tmp_path)
-    mask_path = data_root / rows[-1]["mask_path"]
-    Image.new("L", IMAGE_SIZE, 0).save(mask_path)
     dataset = SyntheticDataset(manifest_path, data_root)
 
-    with pytest.raises(ValueError, match="non-empty"):
-        list(dataset)
+    samples = list(dataset)
+    cached_samples = list(dataset)
+
+    assert samples[0].image.max() > 0.0
+    assert samples[0].image.min() == 0.0
+    for first, second in zip(samples, cached_samples):
+        assert np.allclose(first.image, second.image)
+    assert rows
 
 
 def test_dataset_rejects_unknown_split(tmp_path):

@@ -33,13 +33,11 @@ def identities(dataset_config):
     return generate_identities(dataset_config)
 
 
-def test_generates_400_identities_with_100_per_template(identities):
+def test_generates_400_identities_with_200_per_template(identities):
     assert len(identities) == 400
     assert Counter(identity.template_id for identity in identities) == {
-        "AAD-1": 100,
-        "AAD-2": 100,
-        "PAN-1": 100,
-        "PAN-2": 100,
+        "AAD-1": 200,
+        "PAN-1": 200,
     }
 
 
@@ -52,7 +50,7 @@ def test_identity_and_identifier_uniqueness(identities):
 def test_required_identity_fields_are_present(identities):
     for identity in identities:
         assert identity.group_id
-        assert identity.template_id in {"AAD-1", "AAD-2", "PAN-1", "PAN-2"}
+        assert identity.template_id in {"AAD-1", "PAN-1"}
         assert identity.template_family in {"AAD", "PAN"}
         assert identity.avatar_seed >= 0
         assert identity.specimen is True

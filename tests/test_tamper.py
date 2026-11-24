@@ -5,7 +5,6 @@ import sys
 from pathlib import Path
 
 import pytest
-from PIL import Image
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
@@ -13,10 +12,8 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from docdet.data.identities import load_identities  # noqa: E402
 from docdet.data.render import render_document  # noqa: E402
 from docdet.data.tamper import (  # noqa: E402
-    DIFFICULTIES,
     TAMPER_CATEGORIES,
     TARGET_FIELDS,
-    identifier_is_invalid,
     null_edit,
     tamper_specimen,
 )
@@ -37,138 +34,64 @@ def rendered_records(identity_records):
     return [(record, render_document(record)) for record in identity_records]
 
 
-def _seed(record: dict, category: str, difficulty: str) -> int:
-    return derive_seed(20261124, "test", record["identity_id"], category, difficulty)
+def _seed(record: dict, category: str) -> int:
+    return derive_seed(20261124, "test", record["identity_id"], category)
 
 
-def _used_identifiers(records: list[dict]) -> set[str]:
-    return {record["identifier"] for record in records}
+def _target_box(specimen, category: str):
+    if category == "PHOTO":
+        return specimen.avatar_box
+    left, top, width, height = specimen.field_boxes["full_name"]
+    return left, top, width, height
 
 
 @pytest.mark.parametrize("category", TAMPER_CATEGORIES)
-@pytest.mark.parametrize("difficulty", DIFFICULTIES)
-def test_null_edit_preserves_image_and_creates_empty_mask(
-    rendered_records, category, difficulty
-):
+def test_null_edit_preserves_image(rendered_records, category):
     record, specimen = rendered_records[0]
-    result = null_edit(specimen, record, category, difficulty, _seed(record, category, difficulty))
+    result = null_edit(specimen, record, category, _seed(record, category))
 
     assert result.image.tobytes() == specimen.image.tobytes()
-    assert result.mask.mode == "L"
-    assert result.mask.getbbox() is None
     assert result.metadata["operation"] == "NULL_EDIT"
     assert result.metadata["category"] == category
-    assert result.metadata["difficulty"] == difficulty
     assert result.metadata["target_field"] == TARGET_FIELDS[category]
     assert result.metadata["changed"] is False
 
 
 @pytest.mark.parametrize("category", TAMPER_CATEGORIES)
-@pytest.mark.parametrize("difficulty", DIFFICULTIES)
-def test_tampered_mask_marks_changed_region(rendered_records, category, difficulty):
+def test_tampered_changes_are_confined_to_target_region(rendered_records, category):
     record, specimen = rendered_records[0]
-    used = _used_identifiers([row for row, _ in rendered_records])
-    result = tamper_specimen(
-        specimen,
-        record,
-        category,
-        difficulty,
-        _seed(record, category, difficulty),
-        used_identifiers=used,
-    )
-
-    assert result.image.size == specimen.image.size
-    assert result.mask.mode == "L"
-    assert result.mask.getbbox() is not None
-    assert result.metadata["operation"] == "TAMPER"
-    assert result.metadata["changed"] is True
-    assert result.metadata["category"] == category
-    assert result.metadata["difficulty"] == difficulty
-    assert result.metadata["target_field"] == TARGET_FIELDS[category]
-
-
-@pytest.mark.parametrize("category", TAMPER_CATEGORIES)
-@pytest.mark.parametrize("difficulty", DIFFICULTIES)
-def test_pre_degradation_changes_are_confined_to_mask(rendered_records, category, difficulty):
-    record, specimen = rendered_records[0]
-    used = _used_identifiers([row for row, _ in rendered_records])
-    result = tamper_specimen(
-        specimen,
-        record,
-        category,
-        difficulty,
-        _seed(record, category, difficulty),
-        used_identifiers=used,
-    )
+    result = tamper_specimen(specimen, record, category, _seed(record, category))
     original = specimen.image.load()
     changed = result.image.load()
-    mask = result.mask.load()
+    left, top, width, height = _target_box(specimen, category)
 
     for y in range(specimen.image.height):
         for x in range(specimen.image.width):
-            if mask[x, y] == 0:
-                assert original[x, y] == changed[x, y], (category, difficulty, x, y)
+            if left <= x < left + width and top <= y < top + height:
+                continue
+            assert original[x, y] == changed[x, y], (category, x, y)
+
+    assert result.metadata["operation"] == "TAMPER"
+    assert result.metadata["changed"] is True
 
 
-@pytest.mark.parametrize("difficulty", DIFFICULTIES)
-def test_identifier_tampering_keeps_identifier_invalid_and_unique(
-    identity_records, rendered_records, difficulty
-):
-    records = [row for row, _ in rendered_records]
-    used = _used_identifiers(records)
+def test_text_tampering_keeps_fictional_name_format(rendered_records):
     record, specimen = rendered_records[0]
-    original_identifier = record["identifier"]
+    result = tamper_specimen(specimen, record, "TEXT", _seed(record, "TEXT"))
 
-    result = tamper_specimen(
-        specimen,
-        record,
-        "DATE_NUMBER",
-        difficulty,
-        _seed(record, "DATE_NUMBER", difficulty),
-        used_identifiers=used,
-    )
-    replacement = result.metadata["identifier"]
-
-    assert replacement != original_identifier
-    assert replacement not in used
-    assert identifier_is_invalid(replacement, record["template_family"])
-    assert result.metadata["original_identifier"] == original_identifier
+    assert result.metadata["field_value"].startswith("Sample Name ")
+    assert result.metadata["field_value"] != record["fields"]["full_name"]
 
 
-@pytest.mark.parametrize("difficulty", DIFFICULTIES)
-def test_photo_tampering_replaces_avatar_with_different_avatar(rendered_records, difficulty):
+def test_photo_tampering_replaces_avatar(rendered_records):
     record, specimen = rendered_records[0]
-    result = tamper_specimen(
-        specimen,
-        record,
-        "PHOTO",
-        difficulty,
-        _seed(record, "PHOTO", difficulty),
-    )
+    result = tamper_specimen(specimen, record, "PHOTO", _seed(record, "PHOTO"))
     left, top, width, height = specimen.avatar_box
     original_crop = specimen.image.crop((left, top, left + width, top + height))
     changed_crop = result.image.crop((left, top, left + width, top + height))
 
     assert original_crop.tobytes() != changed_crop.tobytes()
     assert result.metadata["avatar_seed"] != record["avatar_seed"]
-    assert result.mask.getbbox() == specimen.avatar_box[:2] + (
-        specimen.avatar_box[0] + specimen.avatar_box[2],
-        specimen.avatar_box[1] + specimen.avatar_box[3],
-    )
-
-
-def test_text_tampering_keeps_fictional_name_format(rendered_records):
-    record, specimen = rendered_records[0]
-    result = tamper_specimen(
-        specimen,
-        record,
-        "TEXT",
-        "EASY",
-        _seed(record, "TEXT", "EASY"),
-    )
-
-    assert result.metadata["field_value"].startswith("Sample Name ")
-    assert result.metadata["field_value"] != record["fields"]["full_name"]
 
 
 def test_tamper_does_not_mutate_identity_or_render(rendered_records):
@@ -176,23 +99,14 @@ def test_tamper_does_not_mutate_identity_or_render(rendered_records):
     original_record = copy.deepcopy(record)
     original_image = specimen.image.tobytes()
 
-    tamper_specimen(
-        specimen,
-        record,
-        "TEXT",
-        "MEDIUM",
-        _seed(record, "TEXT", "MEDIUM"),
-    )
+    tamper_specimen(specimen, record, "TEXT", _seed(record, "TEXT"))
 
     assert record == original_record
     assert specimen.image.tobytes() == original_image
 
 
-@pytest.mark.parametrize(
-    ("category", "difficulty"),
-    [("AUDIO", "EASY"), ("TEXT", "HARD"), ("", "EASY")],
-)
-def test_tamper_rejects_unknown_category_or_difficulty(rendered_records, category, difficulty):
+@pytest.mark.parametrize("category", ["AUDIO", "DATE_NUMBER", ""])
+def test_tamper_rejects_unknown_category(rendered_records, category):
     record, specimen = rendered_records[0]
     with pytest.raises(ValueError):
-        tamper_specimen(specimen, record, category, difficulty, 1)
+        tamper_specimen(specimen, record, category, 1)

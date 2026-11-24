@@ -1,4 +1,4 @@
-"""Machine-readable integrity audit for the generated specimen dataset."""
+"""Basic integrity audit for the generated MVP dataset."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import csv
 import hashlib
 import json
 import sys
-from collections import Counter, defaultdict
+from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,25 +16,21 @@ from typing import Any
 from PIL import Image
 
 from docdet.config import resolve_project_path
-from docdet.data.tamper import (
-    DIFFICULTIES,
-    TAMPER_CATEGORIES,
-    identifier_is_invalid,
-)
+from docdet.data.identities import identifier_is_invalid
+from docdet.data.tamper import TAMPER_CATEGORIES
 
 DEFAULT_MANIFEST_PATH = "data/manifests/dataset.jsonl"
 DEFAULT_DATA_ROOT = "data/generated"
 DEFAULT_SPLITS_PATH = "data/splits/splits_A.csv"
 DEFAULT_REPORT_PATH = "results/audit.json"
 DEFAULT_EXPECTED_COUNTS = {
-    "images": 2400,
+    "images": 800,
     "identities": 400,
-    "pairs": 1200,
-    "label_counts": {"GENUINE": 1200, "TAMPERED": 1200},
-    "category_counts": {category: 800 for category in TAMPER_CATEGORIES},
-    "difficulty_counts": {"EASY": 1200, "MEDIUM": 1200},
-    "template_counts": {"AAD-1": 600, "AAD-2": 600, "PAN-1": 600, "PAN-2": 600},
-    "split_counts": {"train": 1680, "validation": 360, "test": 360},
+    "pairs": 400,
+    "label_counts": {"GENUINE": 400, "TAMPERED": 400},
+    "category_counts": {"TEXT": 400, "PHOTO": 400},
+    "template_counts": {"AAD-1": 400, "PAN-1": 400},
+    "split_counts": {"train": 560, "validation": 120, "test": 120},
 }
 REQUIRED_FIELDS = {
     "image_id",
@@ -46,18 +42,10 @@ REQUIRED_FIELDS = {
     "split",
     "label",
     "category",
-    "difficulty",
     "target_field",
     "image_path",
-    "mask_path",
     "operation",
     "identifier",
-    "original_identifier",
-    "pair_seed",
-    "tamper_seed",
-    "degradation_seed",
-    "degradation_params",
-    "capture_settings",
     "specimen_label",
 }
 SHARED_PAIR_FIELDS = (
@@ -66,15 +54,7 @@ SHARED_PAIR_FIELDS = (
     "template_id",
     "split",
     "category",
-    "difficulty",
     "target_field",
-    "base_render_id",
-    "base_render_seed",
-    "pair_seed",
-    "tamper_seed",
-    "degradation_seed",
-    "degradation_params",
-    "capture_settings",
 )
 
 
@@ -159,10 +139,6 @@ def _count_signature(entries: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             category: sum(row.get("category") == category for row in entries)
             for category in TAMPER_CATEGORIES
         },
-        "difficulty_counts": {
-            difficulty: sum(row.get("difficulty") == difficulty for row in entries)
-            for difficulty in DIFFICULTIES
-        },
         "template_counts": {
             template: sum(row.get("template_id") == template for row in entries)
             for template in templates
@@ -180,7 +156,10 @@ def _matches_expected(actual: Mapping[str, Any], expected: Mapping[str, Any]) ->
             actual_value = actual.get(key)
             if not isinstance(actual_value, Mapping):
                 return False
-            if any(actual_value.get(name) != expected_value for name, expected_value in value.items()):
+            if any(
+                actual_value.get(name) != expected_value
+                for name, expected_value in value.items()
+            ):
                 return False
         elif actual.get(key) != value:
             return False
@@ -196,9 +175,7 @@ def run_audit(config: AuditConfig) -> dict[str, Any]:
 
     image_ids = [row.get("image_id") for row in entries]
     path_fields_ok = all(
-        _is_safe_relative_path(row.get("image_path"))
-        and _is_safe_relative_path(row.get("mask_path"))
-        for row in entries
+        _is_safe_relative_path(row.get("image_path")) for row in entries
     )
     fields_ok = all(REQUIRED_FIELDS <= set(row) for row in entries)
     record(
@@ -207,20 +184,19 @@ def run_audit(config: AuditConfig) -> dict[str, Any]:
         row_count=len(entries),
         missing_fields=sum(bool(REQUIRED_FIELDS - set(row)) for row in entries),
         duplicate_image_ids=len(image_ids) - len(set(image_ids)),
-        unsafe_paths=sum(not _is_safe_relative_path(row.get("image_path")) for row in entries),
+        unsafe_paths=sum(
+            not _is_safe_relative_path(row.get("image_path")) for row in entries
+        ),
     )
 
     file_issues = 0
     for row in entries:
         image_path = config.data_root / row["image_path"]
-        mask_path = config.data_root / row["mask_path"]
-        if not image_path.is_file() or not mask_path.is_file():
+        if not image_path.is_file():
             file_issues += 1
             continue
-        with Image.open(image_path) as image, Image.open(mask_path) as mask:
+        with Image.open(image_path) as image:
             if image.size != config.image_size or image.mode != "RGB":
-                file_issues += 1
-            if mask.size != config.image_size or mask.mode != "L":
                 file_issues += 1
     record("file_integrity", file_issues == 0, checked=len(entries), issues=file_issues)
 
@@ -231,14 +207,6 @@ def run_audit(config: AuditConfig) -> dict[str, Any]:
         _matches_expected(actual_counts, expected_counts),
         actual=actual_counts,
         expected=dict(expected_counts),
-    )
-    record(
-        "deterministic_counts",
-        _count_signature(entries) == actual_counts
-        and actual_counts.get("images") == expected_counts.get("images")
-        and actual_counts.get("identities") == expected_counts.get("identities")
-        and actual_counts.get("pairs") == expected_counts.get("pairs"),
-        signature=actual_counts,
     )
 
     pairs: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
@@ -257,61 +225,31 @@ def run_audit(config: AuditConfig) -> dict[str, Any]:
                 pair_issues += 1
     record("pair_integrity", pair_issues == 0, pair_count=len(pairs), issues=pair_issues)
 
-    mask_issues = 0
-    for row in entries:
-        mask_path = config.data_root / row["mask_path"]
-        if not mask_path.is_file():
-            mask_issues += 1
-            continue
-        with Image.open(mask_path) as mask:
-            nonempty = mask.getbbox() is not None
-        if (row["label"] == "GENUINE" and nonempty) or (
-            row["label"] == "TAMPERED" and not nonempty
-        ):
-            mask_issues += 1
-    record("masks", mask_issues == 0, checked=len(entries), issues=mask_issues)
-
     identity_splits: dict[str, set[str]] = defaultdict(set)
-    pair_identities: dict[str, set[str]] = defaultdict(set)
     pair_splits: dict[str, set[str]] = defaultdict(set)
-    group_identities: dict[str, set[str]] = defaultdict(set)
+    group_splits: dict[str, set[str]] = defaultdict(set)
     split_issues = 0
     source_splits = _load_splits(config.splits_path)
     for row in entries:
         identity_splits[row["identity_id"]].add(row["split"])
-        pair_identities[row["pair_id"]].add(row["identity_id"])
         pair_splits[row["pair_id"]].add(row["split"])
-        group_identities[row["group_id"]].add(row["identity_id"])
+        group_splits[row["group_id"]].add(row["split"])
         if source_splits and source_splits.get(row["identity_id"]) != row["split"]:
             split_issues += 1
-    if any(len(values) != 1 for values in identity_splits.values()):
-        split_issues += 1
-    if any(len(values) != 1 for values in pair_identities.values()):
-        split_issues += 1
-    if any(len(values) != 1 for values in pair_splits.values()):
-        split_issues += 1
-    if any(len(values) != 1 for values in group_identities.values()):
-        split_issues += 1
+    for splits in (identity_splits, pair_splits, group_splits):
+        if any(len(values) != 1 for values in splits.values()):
+            split_issues += 1
     record("leakage", split_issues == 0, issues=split_issues)
 
     digest_rows: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     duplicate_images = 0
-    allowed_null_duplicates = 0
     for row in entries:
         image_path = config.data_root / row["image_path"]
         if not image_path.is_file():
             continue
         digest = _digest(image_path)
-        for prior in digest_rows[digest]:
-            if (
-                row["label"] == "GENUINE"
-                and prior["label"] == "GENUINE"
-                and row["identity_id"] == prior["identity_id"]
-                and row["base_render_id"] == prior["base_render_id"]
-            ):
-                allowed_null_duplicates += 1
-            else:
-                duplicate_images += 1
+        if digest_rows[digest]:
+            duplicate_images += 1
         digest_rows[digest].append(row)
     identifier_identities: dict[str, set[str]] = defaultdict(set)
     for row in entries:
@@ -323,7 +261,6 @@ def run_audit(config: AuditConfig) -> dict[str, Any]:
         "duplicates",
         duplicate_images == 0 and duplicate_identifiers == 0,
         duplicate_images=duplicate_images,
-        allowed_null_edit_duplicates=allowed_null_duplicates,
         duplicate_identifiers=duplicate_identifiers,
     )
 
@@ -364,7 +301,7 @@ def run_audit(config: AuditConfig) -> dict[str, Any]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Audit the generated specimen dataset")
+    parser = argparse.ArgumentParser(description="Audit the generated dataset")
     parser.add_argument("--manifest", default=DEFAULT_MANIFEST_PATH)
     parser.add_argument("--data-root", default=DEFAULT_DATA_ROOT)
     parser.add_argument("--splits", default=DEFAULT_SPLITS_PATH)

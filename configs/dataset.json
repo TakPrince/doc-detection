@@ -2,8 +2,8 @@
   "schema_version": 1,
   "seed": 20261124,
   "total_identities": 400,
-  "identities_per_template": 100,
-  "templates": ["AAD-1", "AAD-2", "PAN-1", "PAN-2"],
+  "identities_per_template": 200,
+  "templates": ["AAD-1", "PAN-1"],
   "output_path": "data/identities/identities.json",
   "specimen_label": "SPECIMEN – NOT A VALID DOCUMENT"
 }

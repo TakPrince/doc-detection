@@ -76,6 +76,20 @@ def verhoeff_is_valid(number: str) -> bool:
     return checksum == 0
 
 
+def identifier_is_invalid(identifier: str, family: str) -> bool:
+    if not isinstance(identifier, str):
+        return False
+    if family == "AAD":
+        return bool(AADHAAR_PATTERN.fullmatch(identifier)) and not verhoeff_is_valid(
+            identifier
+        )
+    if family == "PAN":
+        return bool(PAN_PATTERN.fullmatch(identifier)) and (
+            identifier[3] not in RECOGNIZED_PAN_CATEGORIES
+        )
+    return False
+
+
 def _generate_aadhaar_style_identifier(rng, used: set[str]) -> str:
     for _ in range(10_000):
         candidate = rng.choice(("0", "1")) + "".join(
@@ -279,6 +293,7 @@ __all__ = [
     "RECOGNIZED_PAN_CATEGORIES",
     "Identity",
     "generate_identities",
+    "identifier_is_invalid",
     "load_identities",
     "save_identities",
     "validate_identities",
