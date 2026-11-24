@@ -1,3 +1,4 @@
 data/
 docs/
-tests/
+tests/*
+!tests/test_inference.py
